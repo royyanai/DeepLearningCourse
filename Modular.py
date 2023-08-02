@@ -473,18 +473,6 @@ class Model(nn.Module):
         return torch.clip(current_step_tensor, min=-1, max=1)
 
 
-def compute_FID(model, time, data):
-    original_images = data.to(device)
-    time_list = [time]*original_images.size(0)
-    noised_images, _ = model.sample_noised_images(original_images, time_list)
-    cleaned_images = model.denoise_images(
-        noised_images, time)
-    interpolated_original_images = fid.interpolate(original_images)
-    interpolated_cleaned_images = fid.interpolate(cleaned_images)
-    FID = fid.compute_FID(interpolated_original_images,
-                          interpolated_cleaned_images).item()
-    return FID
-
 
 def generate_test_data():
     """this is a temporary function for testing purpuses"""
@@ -556,6 +544,33 @@ def display_images_from_noise(model, num_images):
         plt.imshow(rescaled_cleaned[i, :, :, :])
         plt.show()
 
+def save_fid_features(model,batch_size,generated_path,original_data_path):
+    feature_extractor=fid.FEATURE_EXTRACTOR
+    data_loader = DataLoader(TRAIN_SET, batch_size=batch_size)
+
+
+    for X,_ in data_loader:
+        #generated images part of loop
+        mean = torch.zeros((batch_size, 3, 32, 32))
+        original_images = torch.normal(mean=mean, std=1)
+        original_images = original_images.to(device)
+        cleaned_images = model.denoise_images(
+        original_images, 999)
+
+        features=fid.extract_features(feature_extractor,cleaned_images)
+        with open(generated_path,'ba') as f:
+            print('generated features saved')
+            pickle.dump(features,f)
+
+        #dataset part of loop
+        features=fid.extract_features(feature_extractor,X)
+        with open(original_data_path,'ba') as f:
+            print('original features saved')
+            pickle.dump(features,f)
+
+            
+
+        
 
 def train_and_evaluate(num_epochs, lr, batch_size,  model, wd=0, state_dict_paths=None):
    # initialize dataloaders
@@ -615,3 +630,6 @@ def train_and_evaluate(num_epochs, lr, batch_size,  model, wd=0, state_dict_path
     torch.save(model.state_dict(), state_dict_paths[1])
     print('ema model pictures')
     display_images_from_noise(model, 30)
+
+
+

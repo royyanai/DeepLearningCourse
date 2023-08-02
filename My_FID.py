@@ -2,6 +2,8 @@ import torch
 import torchvision
 import PIL.Image as Image
 import scipy.linalg as lin
+import numpy as np
+import pickle
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -14,117 +16,129 @@ FEATURE_EXTRACTOR.to(device)
 FEATURE_EXTRACTOR.eval()
 
 
-def interpolate(batch, size):
+def interpolate(batch):
     arr = []
     for img in batch:
         pil_img = torchvision.transforms.ToPILImage()(img)
-        resized_img = pil_img.resize((size, size), Image.BILINEAR)
+        resized_img = pil_img.resize((299, 299), Image.BILINEAR)
         arr.append(torchvision.transforms.ToTensor()(resized_img))
     output = torch.stack(arr)
     output = output.to(device)
     return output
 
 
-def extract_features(self, x):
-    x = self.Conv2d_1a_3x3(x)
+def extract_features(self, batch):
+
+    batch=interpolate(batch)
+
+    batch = self.Conv2d_1a_3x3(batch)
     # N x 32 x 149 x 149
-    x = self.Conv2d_2a_3x3(x)
+    batch = self.Conv2d_2a_3x3(batch)
     # N x 32 x 147 x 147
-    x = self.Conv2d_2b_3x3(x)
+    batch = self.Conv2d_2b_3x3(batch)
     # N x 64 x 147 x 147
-    x = self.maxpool1(x)
+    batch = self.maxpool1(batch)
     # N x 64 x 73 x 73
-    x = self.Conv2d_3b_1x1(x)
+    batch = self.Conv2d_3b_1x1(batch)
     # N x 80 x 73 x 73
-    x = self.Conv2d_4a_3x3(x)
+    batch = self.Conv2d_4a_3x3(batch)
     # N x 192 x 71 x 71
-    x = self.maxpool2(x)
+    batch = self.maxpool2(batch)
     # N x 192 x 35 x 35
-    x = self.Mixed_5b(x)
+    batch = self.Mixed_5b(batch)
     # N x 256 x 35 x 35
-    x = self.Mixed_5c(x)
+    batch = self.Mixed_5c(batch)
     # N x 288 x 35 x 35
-    x = self.Mixed_5d(x)
+    batch = self.Mixed_5d(batch)
     # N x 288 x 35 x 35
-    x = self.Mixed_6a(x)
+    batch = self.Mixed_6a(batch)
     # N x 768 x 17 x 17
-    x = self.Mixed_6b(x)
+    batch = self.Mixed_6b(batch)
     # N x 768 x 17 x 17
-    x = self.Mixed_6c(x)
+    batch = self.Mixed_6c(batch)
     # N x 768 x 17 x 17
-    x = self.Mixed_6d(x)
+    batch = self.Mixed_6d(batch)
     # N x 768 x 17 x 17
-    x = self.Mixed_6e(x)
+    batch = self.Mixed_6e(batch)
     # N x 768 x 17 x 17
-    x = self.Mixed_7a(x)
+    batch = self.Mixed_7a(batch)
     # N x 1280 x 8 x 8
-    x = self.Mixed_7b(x)
+    batch = self.Mixed_7b(batch)
     # N x 2048 x 8 x 8
-    x = self.Mixed_7c(x)
+    batch = self.Mixed_7c(batch)
     # N x 2048 x 8 x 8
     # Adaptive average pooling
-    x = self.avgpool(x)
+    batch = self.avgpool(batch)
     # N x 2048 x 1 x 1
-    x = self.dropout(x)
+    batch = self.dropout(batch)
     # N x 2048 x 1 x 1
-    x = torch.flatten(x, 1)
+    batch = torch.flatten(batch, 1)
     # N x 2048
-    return x
 
-
-def matrix_sqrt(matrix):
-    matrix = matrix.to('cpu')
-    matrix = matrix.detach()
-    matrix = matrix.numpy()
-    sqrt = lin.sqrtm(matrix)
-    output = torch.from_numpy(sqrt)
-    output = output.to(device)
+    output=batch.numpy(force=True)
     return output
 
 
-def compute_FID(ground_truth_distribution, genrated_distribution):
-    ground_truth_feature_distribution = extract_features(FEATURE_EXTRACTOR,
-                                                         ground_truth_distribution)
-    generated_feature_distribution = extract_features(
-        FEATURE_EXTRACTOR, genrated_distribution)
+def matrix_sqrt(matrix):
+    output = lin.sqrtm(matrix)
+    return output
 
-    ground_truth_feature_distribution = torch.transpose(
-        ground_truth_feature_distribution, dim0=0, dim1=1)
-    generated_feature_distribution = torch.transpose(
-        generated_feature_distribution, dim0=0, dim1=1)
+def compute_mean(input):
+    return torch.mean(input,dim=0)
 
-    ground_truth_covariance = torch.cov(ground_truth_feature_distribution)
-    # checking for nan
-    nan_sum = torch.sum(torch.isnan(ground_truth_covariance))
-    if nan_sum > 0:
-        print("nan found in ground truth covariance")
-    generated_distribution_covariance = torch.cov(
-        generated_feature_distribution)
-    # checking for nan
-    nan_sum = torch.sum(torch.isnan(generated_distribution_covariance))
-    if nan_sum > 0:
-        print("nan found in generated distribution covariance")
+def compute_cov_matrix(input):
+    B,D=input.shape
+    
+    mean=compute_mean(input)
+    means_matrix=mean.reshape(B,1)*mean.reshape(1,B)
 
-    ground_truth_mean = torch.mean(ground_truth_feature_distribution, dim=1)
-    generated_distribution_mean = torch.mean(
-        generated_feature_distribution, dim=1)
-    # checking for nan
-    nan_sum = torch.sum(torch.isnan(
-        ground_truth_mean+generated_distribution_mean))
-    if nan_sum > 0:
-        print("nan found in mean")
+    products_tensor= input.reshape(B,D,1)*input.reshape(B,1,D)
 
-    sqrt = matrix_sqrt(
-        torch.mm(ground_truth_covariance, generated_distribution_covariance))
-    # checking for nan
-    nan_sum = torch.sum(torch.isnan(sqrt))
-    if nan_sum > 0:
-        print("nan found in sqrt")
+    cov=compute_mean(products_tensor)-means_matrix
+    return cov
 
-    trace = torch.trace(ground_truth_covariance +
-                        generated_distribution_covariance-2*sqrt)
+def compute_fid(mean_1,mean_2,cov_1,cov_2):
+    diff=mean_1-mean_2
+    
+    mean_diff_term=np.sum(diff**2)
 
-    FID = torch.sqrt(torch.abs(torch.norm(ground_truth_mean -
-                     generated_distribution_mean, p=2)+trace))
+    cov_2_sqrt=matrix_sqrt(cov_2)
+    sqrt_covs_term=np.trace(matrix_sqrt(np.matmul(cov_2_sqrt,np.matmul(cov_1,cov_2_sqrt))))
 
-    return FID
+    return mean_diff_term+np.trace(cov_1)+np.trace(cov_2)-2*sqrt_covs_term
+
+
+def compute_fid_from_feature_files(gen_path,or_path):
+
+    generated_features=[]
+    original_features=[]
+
+    while True:
+        with open(gen_path ,'br') as f:
+            try:
+                features=pickle.load(f)
+                generated_features.append(features)
+            except:
+                break    
+
+    while True:
+        with open(or_path ,'br') as f:
+            try:
+                features=pickle.load(f)
+                original_features.append(features)
+            except:
+                break    
+
+    original_features=np.stach(original_features)
+    generated_features=np.stack(generated_features)
+
+    or_mean=compute_mean(original_features)
+    or_cov=compute_cov_matrix(original_features)
+
+    gen_mean=compute_mean(generated_features)
+    gen_cov=compute_cov_matrix(generated_features)
+
+    print(compute_fid(or_mean,gen_mean,or_cov,gen_cov))
+
+
+
