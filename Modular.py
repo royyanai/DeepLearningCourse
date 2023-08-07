@@ -4,6 +4,7 @@ import numpy as np
 import random as rn
 import pickle
 import torchvision
+from transformers import get_cosine_schedule_with_warmup
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
@@ -41,7 +42,7 @@ class EMA():
 
 
 class ResBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, time_embedding_dimension, dropout=0.1):
+    def __init__(self, in_channels, out_channels, time_embedding_dimension, dropout=0.0):
         super(ResBlock, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -59,8 +60,8 @@ class ResBlock(nn.Module):
         self.time_embedding_layer = nn.Linear(
             time_embedding_dimension, out_channels)
 
-        self.batch_norm_1 = nn.GroupNorm(32, in_channels)
-        self.batch_norm_2 = nn.GroupNorm(32, out_channels)
+        self.group_norm_1 = nn.GroupNorm(32, in_channels)
+        self.group_norm_2 = nn.GroupNorm(32, out_channels)
         self.dropout = nn.Dropout2d(dropout)
 
         self.activation = nn.SiLU()
@@ -71,10 +72,10 @@ class ResBlock(nn.Module):
         time_emb = self.time_embedding_layer(time_emb)
         time_emb = self.activation(time_emb)
 
-        out = self.activation(self.batch_norm_1(input))
+        out = self.activation(self.group_norm_1(input))
         out = self.conv_layer_1(out)
         out = out+time_emb.view(B, -1, 1, 1)
-        out = self.activation(self.batch_norm_2(out))
+        out = self.activation(self.group_norm_2(out))
         out = self.dropout(out)
         out = self.conv_layer_2(out)
         if self.in_channels == self.out_channels:
@@ -95,12 +96,12 @@ class AttensionBlock(nn.Module):
         self.output_layer = nn.Conv2d(channels, channels, 1)
 
         self.softmax = nn.Softmax(dim=3)
-        self.batchnorm = nn.GroupNorm(32, channels)
+        self.groupnorm = nn.GroupNorm(32, channels)
         self.activation = nn.SiLU()
 
     def forward(self, input):
         B, C, H, W = input.size()
-        out = self.activation(self.batchnorm(input))
+        out = self.activation(self.groupnorm(input))
         q = self.Q(out)
         k = self.K(out)
         v = self.V(out)
@@ -243,8 +244,8 @@ class Model(nn.Module):
 
         for i in range(num_levels-1):
             mul = channel_multiplier_list[i]
-            setattr(self, f"downsample_layer_{i+1}", nn.Sequential(nn.Conv2d(
-                mul*base_channel_expension, mul*2*base_channel_expension, kernel_size=2, stride=2)))
+            setattr(self, f"downsample_layer_{i+1}", nn.Sequential(nn.AvgPool2d(2,2),
+                                                                   nn.Conv2d(in_channels=mul*base_channel_expension,out_channels=2*mul*base_channel_expension,kernel_size=3,padding='same')))
 
         self.first_bottom_res_block = ResBlock(
             channel_multiplier_list[-1]*base_channel_expension,
@@ -399,6 +400,7 @@ class Model(nn.Module):
 
         out = self.silu(self.normalize(out))
         out = self.output_layers(out)
+        return out
         out = (input-torch.sqrt(1-alpha_bars)*out)/torch.sqrt(alpha_bars)
         skip = out
 
@@ -568,9 +570,9 @@ def save_fid_features(model,batch_size,generated_path,original_data_path):
             print('original features saved')
             pickle.dump(features,f)
 
-            
 
-        
+
+
 
 def train_and_evaluate(num_epochs, lr, batch_size,  model, wd=0, state_dict_paths=None):
    # initialize dataloaders
@@ -582,9 +584,13 @@ def train_and_evaluate(num_epochs, lr, batch_size,  model, wd=0, state_dict_path
         model.load_state_dict(torch.load(state_dict_paths[0]))
 
     noise_criterion = model.l2
-    optimizer = torch.optim.Adam(
-        params=model.parameters(), lr=lr, weight_decay=wd)
-
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    
+    lr_scheduler = get_cosine_schedule_with_warmup(
+    optimizer=optimizer,
+    num_warmup_steps=5,
+    num_training_steps=(len(train_loader) * num_epochs),
+)
     ema = EMA(0.999)
     for name, param in model.named_parameters():
         if param.requires_grad:
@@ -611,8 +617,8 @@ def train_and_evaluate(num_epochs, lr, batch_size,  model, wd=0, state_dict_path
             epoch_losses.append(loss.item())
             loss.backward()
             optimizer.step()
+            lr_scheduler.step()
             optimizer.zero_grad()
-            optimizer.step()
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     ema(name, param.data)
@@ -630,6 +636,8 @@ def train_and_evaluate(num_epochs, lr, batch_size,  model, wd=0, state_dict_path
     torch.save(model.state_dict(), state_dict_paths[1])
     print('ema model pictures')
     display_images_from_noise(model, 30)
+
+
 
 
 

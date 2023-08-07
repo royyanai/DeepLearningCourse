@@ -84,18 +84,27 @@ def matrix_sqrt(matrix):
     return output
 
 def compute_mean(input):
-    return torch.mean(input,dim=0)
+    return np.mean(input,axis=0)
+
+def compute_cov_of_2_features(feature_1,feature_2):
+    mean_1=compute_mean(feature_1)
+    mean_2=compute_mean(feature_2)
+    prod_mean=compute_mean(feature_1*feature_2)
+    return prod_mean-mean_1*mean_2
+
 
 def compute_cov_matrix(input):
     B,D=input.shape
     
-    mean=compute_mean(input)
-    means_matrix=mean.reshape(B,1)*mean.reshape(1,B)
+    output=np.zeros((D,D))
+    for i in range(D):
+        for j in range(i,D):
+            print((i,j))
+            cov=compute_cov_of_2_features(input[:,i],input[:,j])
+            output[i,j]=output[j,i]=cov
 
-    products_tensor= input.reshape(B,D,1)*input.reshape(B,1,D)
+    return output
 
-    cov=compute_mean(products_tensor)-means_matrix
-    return cov
 
 def compute_fid(mean_1,mean_2,cov_1,cov_2):
     diff=mean_1-mean_2
@@ -107,38 +116,34 @@ def compute_fid(mean_1,mean_2,cov_1,cov_2):
 
     return mean_diff_term+np.trace(cov_1)+np.trace(cov_2)-2*sqrt_covs_term
 
-
-def compute_fid_from_feature_files(gen_path,or_path):
-
-    generated_features=[]
-    original_features=[]
-
-    while True:
-        with open(gen_path ,'br') as f:
+def compute_statistics_from_feature_file(or_path,des_path):
+    
+    features_list=[]
+    with open(or_path ,'br') as f:
+        while True:
             try:
-                features=pickle.load(f)
-                generated_features.append(features)
+                temp_features=pickle.load(f)
+                features_list.append(temp_features)
             except:
-                break    
+                break  
+    features=np.concatenate(features_list)
+    cov=compute_cov_matrix(features)
+    print('cov computed')
+    mean=compute_mean(features)
+    print('mean computed')
+    with open(des_path,'bw') as f:
+        pickle.dump((mean,cov),f)
 
-    while True:
-        with open(or_path ,'br') as f:
-            try:
-                features=pickle.load(f)
-                original_features.append(features)
-            except:
-                break    
 
-    original_features=np.stach(original_features)
-    generated_features=np.stack(generated_features)
 
-    or_mean=compute_mean(original_features)
-    or_cov=compute_cov_matrix(original_features)
 
-    gen_mean=compute_mean(generated_features)
-    gen_cov=compute_cov_matrix(generated_features)
+def compute_fid_from_statistics_files(file_1,file_2):
+    with open(file_1,'br') as f_1, open(file_2,'br') as f_2:
+        mean_1,cov_1=pickle.load(f_1)
+        mean_2,cov_2=pickle.load(f_2)
+        print(compute_fid(mean_1,mean_2,cov_1,cov_2))
 
-    print(compute_fid(or_mean,gen_mean,or_cov,gen_cov))
+    
 
 
 
